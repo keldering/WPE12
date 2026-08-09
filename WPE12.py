@@ -16,8 +16,10 @@ SITE_CONFIGS = {
     }
 }
 
-# Globale variabele om de schone titel te onthouden voor de bestandsnaam
+# Globale variabelen voor navigatie & geschiedenis
 current_page_title = "Journaalpost"
+url_history = []
+primary_root_url = ""
 
 def extract_domain(url):
     match = re.search(r"https?://(?:www\.)?([^/]+)", url)
@@ -183,22 +185,45 @@ def scrape_to_structured_markdown(html_source, url, project_name="Project Kelder
     return re.sub(r'\n{3,}', '\n\n', final_output)
 
 # --- GUI LOGICA ---
+def handle_preview_link_click(target_url):
+    global primary_root_url
+    current_url = url_input.get().strip()
+    cleaned_url = clean_url(target_url)
+    
+    if cleaned_url and cleaned_url != current_url:
+        if current_url:
+            if not primary_root_url:
+                primary_root_url = current_url
+            url_history.append(current_url)
+            btn_back.config(state=tk.NORMAL)
+            btn_home.config(state=tk.NORMAL)
+            
+        url_input.delete(0, tk.END)
+        url_input.insert(0, cleaned_url)
+        execute_scrape()
+
+def go_back():
+    if url_history:
+        prev_url = url_history.pop()
+        url_input.delete(0, tk.END)
+        url_input.insert(0, prev_url)
+        if not url_history:
+            btn_back.config(state=tk.DISABLED)
+        execute_scrape()
+
+def go_home():
+    global primary_root_url
+    if primary_root_url:
+        url_input.delete(0, tk.END)
+        url_input.insert(0, primary_root_url)
+        execute_scrape()
+
 def char_offset_to_tk_index(text, offset):
     """Converts a 0-indexed character offset in text into a Tkinter 'line.column' string index."""
     lines = text[:offset].split('\n')
     line_num = len(lines)
     col_num = len(lines[-1])
     return f"{line_num}.{col_num}"
-
-def handle_preview_link_click(target_url):
-    cleaned_url = clean_url(target_url)
-    if cleaned_url:
-        url_input.delete(0, tk.END)
-        url_input.insert(0, cleaned_url)
-        messagebox.showinfo(
-            "URL Overgezet", 
-            f"Geselecteerde URL is geladen in het invoerveld:\n{cleaned_url}\n\nKlik op 'Scrape and format MD' om deze pagina te verwerken!"
-        )
 
 def make_preview_links_clickable():
     content = preview_box.get("1.0", tk.END)
@@ -217,21 +242,23 @@ def make_preview_links_clickable():
             preview_box.tag_bind(tag_name, "<Enter>", lambda e: preview_box.config(cursor="hand2"))
             preview_box.tag_bind(tag_name, "<Leave>", lambda e: preview_box.config(cursor=""))
             
-            # Bind click directly with the exact pre-calculated target_url
             def create_click_handler(url_to_open):
                 return lambda e: handle_preview_link_click(url_to_open)
                 
             preview_box.tag_bind(tag_name, "<Button-1>", create_click_handler(target_url))
             preview_box.tag_add(tag_name, start_tk, end_tk)
 
-
-
 def execute_scrape():
+    global primary_root_url
     url = url_input.get().strip()
     if not url:
         messagebox.showwarning("Invoer ontbreekt", "Vul eerst een geldige URL in.")
         return
         
+    if not primary_root_url:
+        primary_root_url = url
+        btn_home.config(state=tk.NORMAL)
+
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -274,9 +301,6 @@ def save_markdown():
             with open(save_path, "w", encoding="utf-8") as f:
                 f.write(markdown_content)
             messagebox.showinfo("Succes", f"Bestand opgeslagen op:\n{save_path}")
-            
-            url_input.delete(0, tk.END)
-            preview_box.delete(1.0, tk.END)
             btn_save.config(state=tk.DISABLED)
         except Exception as e:
             messagebox.showerror("Opslag Fout", f"Kon bestand niet opslaan:\n{str(e)}")
@@ -285,12 +309,28 @@ def save_markdown():
 if __name__ == "__main__":
     app = tk.Tk()
     app.title("WPE12 - Gemini Source Formatter + Auto-Naming")
-    app.geometry("750x850")
+    app.geometry("800x850")
     app.configure(bg="#f5f5f5")
 
     tk.Label(app, text="Voer de te scrapen URL in:", bg="#f5f5f5", font=("Arial", 10, "bold")).pack(pady=5)
-    url_input = tk.Entry(app, width=85, font=("Arial", 10))
-    url_input.pack(pady=5)
+    
+    url_frame = tk.Frame(app, bg="#f5f5f5")
+    url_frame.pack(pady=5, padx=10, fill=tk.X)
+
+    btn_back = tk.Button(
+        url_frame, text="⬅ Back", command=go_back, 
+        bg="#757575", fg="white", font=("Arial", 9, "bold"), state=tk.DISABLED
+    )
+    btn_back.pack(side=tk.LEFT, padx=(0, 3))
+
+    btn_home = tk.Button(
+        url_frame, text="🏠 Root", command=go_home, 
+        bg="#FF9800", fg="white", font=("Arial", 9, "bold"), state=tk.DISABLED
+    )
+    btn_home.pack(side=tk.LEFT, padx=(0, 5))
+
+    url_input = tk.Entry(url_frame, font=("Arial", 10))
+    url_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
     url_input.focus()
 
     btn_scrape = tk.Button(
@@ -299,8 +339,8 @@ if __name__ == "__main__":
     )
     btn_scrape.pack(pady=5)
 
-    tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar - Klik op een link om URL over te nemen):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
-    preview_box = scrolledtext.ScrolledText(app, width=85, height=36, font=("Consolas", 10), bg="white", fg="black")
+    tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar - Klik op een link om de pagina direct te scrapen):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
+    preview_box = scrolledtext.ScrolledText(app, width=90, height=35, font=("Consolas", 10), bg="white", fg="black")
     preview_box.pack(pady=5, padx=10)
 
     btn_save = tk.Button(
@@ -311,6 +351,7 @@ if __name__ == "__main__":
     btn_save.pack(pady=10)
 
     app.mainloop()
+
 
 
 
