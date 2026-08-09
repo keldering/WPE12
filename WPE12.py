@@ -170,6 +170,49 @@ def scrape_to_structured_markdown(html_source, url, project_name="Project Kelder
     return re.sub(r'\n{3,}', '\n\n', final_output)
 
 # --- GUI LOGICA ---
+def on_preview_link_click(event):
+    click_index = preview_box.index(f"@{event.x},{event.y}")
+    if "preview_link" in preview_box.tag_names(click_index):
+        ranges = preview_box.tag_ranges("preview_link")
+        for i in range(0, len(ranges), 2):
+            start, end = ranges[i], ranges[i + 1]
+            if preview_box.compare(start, "<=", click_index) and preview_box.compare(click_index, "<", end):
+                clicked_text = preview_box.get(start, end).strip()
+                
+                # Extract URL from Markdown link [Text](URL) or raw URL
+                match = re.search(r'\((https?://[^\s\)]+)\)', clicked_text)
+                if match:
+                    target_url = match.group(1)
+                elif clicked_text.startswith(('http://', 'https://')):
+                    target_url = clicked_text
+                else:
+                    target_url = ""
+                    
+                if target_url:
+                    url_input.delete(0, tk.END)
+                    url_input.insert(0, target_url)
+                    messagebox.showinfo(
+                        "URL Overgezet", 
+                        f"Geselecteerde URL is geladen in het invoerveld:\n{target_url}\n\nKlik op 'Scrape and format MD' om deze pagina te verwerken!"
+                    )
+                break
+
+def make_preview_links_clickable():
+    preview_box.tag_config("preview_link", foreground="#1E88E5", underline=True)
+    preview_box.tag_bind("preview_link", "<Enter>", lambda e: preview_box.config(cursor="hand2"))
+    preview_box.tag_bind("preview_link", "<Leave>", lambda e: preview_box.config(cursor=""))
+    preview_box.tag_bind("preview_link", "<Button-1>", on_preview_link_click)
+
+    preview_box.tag_remove("preview_link", "1.0", tk.END)
+
+    content = preview_box.get("1.0", tk.END)
+    md_link_pattern = re.compile(r'\[([^\]]+)\]\((https?://[^\s\)]+)\)|https?://[^\s\)]+')
+
+    for match in md_link_pattern.finditer(content):
+        start_idx = f"1.0 + {match.start()} chars"
+        end_idx = f"1.0 + {match.end()} chars"
+        preview_box.tag_add("preview_link", start_idx, end_idx)
+
 def execute_scrape():
     url = url_input.get().strip()
     if not url:
@@ -188,6 +231,7 @@ def execute_scrape():
         
         preview_box.delete(1.0, tk.END)
         preview_box.insert(tk.END, markdown_result)
+        make_preview_links_clickable()
         
         btn_save.config(state=tk.NORMAL)
         
@@ -242,7 +286,7 @@ if __name__ == "__main__":
     )
     btn_scrape.pack(pady=5)
 
-    tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
+    tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar - Klik op een link om URL over te nemen):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
     preview_box = scrolledtext.ScrolledText(app, width=85, height=36, font=("Consolas", 10), bg="white", fg="black")
     preview_box.pack(pady=5, padx=10)
 
@@ -254,5 +298,6 @@ if __name__ == "__main__":
     btn_save.pack(pady=10)
 
     app.mainloop()
+
 
 
