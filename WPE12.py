@@ -1,10 +1,11 @@
 import os
 import re
 from datetime import datetime
-import urllib.request
+import requests
+from urllib.parse import urljoin
 import tkinter as tk
 from tkinter import messagebox, filedialog, scrolledtext
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 # --- CONFIGURATIE VOOR DOELGERICHTE SCRAPING ---
 SITE_CONFIGS = {
@@ -31,19 +32,53 @@ def slugify_title(text):
     """Maakt een titel veilig voor Windows bestandsnamen."""
     if not text:
         return "Journaalpost"
-    # Sla alleen letters, cijfers en spaties op, vervang de rest door niks
     clean = re.sub(r'[\\/*?:"<>|]', "", text)
-    # Vervang spaties door underscores en kap af op 40 karakters voor de leesbaarheid
     return re.sub(r'\s+', '_', clean.strip())[:40]
 
-def parse_html_table(table_node):
+def node_to_markdown_inline(node, base_url=""):
+    """Converteert inline HTML elementen (a, code, strong, em) naar Markdown met behoud van links."""
+    if not node:
+        return ""
+    
+    parts = []
+    children = getattr(node, 'children', [node])
+    for child in children:
+        if isinstance(child, NavigableString):
+            parts.append(str(child))
+        elif child.name == 'a':
+            href = child.get('href', '').strip()
+            link_text = clean_fragment(child.get_text())
+            if href:
+                full_url = urljoin(base_url, href) if base_url else href
+                if link_text:
+                    parts.append(f" [{link_text}]({full_url}) ")
+                else:
+                    parts.append(f" [{full_url}]({full_url}) ")
+            else:
+                parts.append(link_text)
+        elif child.name in ['strong', 'b']:
+            text = clean_fragment(child.get_text())
+            parts.append(f"**{text}**" if text else "")
+        elif child.name in ['em', 'i']:
+            text = clean_fragment(child.get_text())
+            parts.append(f"*{text}*" if text else "")
+        elif child.name == 'code' and getattr(node, 'name', '') != 'pre':
+            text = child.get_text().strip()
+            parts.append(f"`{text}`" if text else "")
+        else:
+            parts.append(node_to_markdown_inline(child, base_url))
+            
+    res = "".join(parts)
+    return re.sub(r'[ \t]+', ' ', res).strip()
+
+def parse_html_table(table_node, base_url=""):
     rows = table_node.find_all('tr')
     if not rows:
         return ""
         
     md_table = []
-    header_cells = rows.find_all(['th', 'td'])
-    headers = [clean_fragment(c.get_text()) for c in header_cells]
+    header_cells = rows[0].find_all(['th', 'td'])
+    headers = [node_to_markdown_inline(c, base_url) for c in header_cells]
     
     if not any(headers):
         return ""
@@ -53,7 +88,7 @@ def parse_html_table(table_node):
     
     for row in rows[1:]:
         cells = row.find_all(['td', 'th'])
-        row_data = [clean_fragment(c.get_text()) for c in cells]
+        row_data = [node_to_markdown_inline(c, base_url) for c in cells]
         if len(row_data) < len(headers):
             row_data += [""] * (len(headers) - len(row_data))
         md_table.append("| " + " | ".join(row_data[:len(headers)]) + " |")
@@ -70,17 +105,19 @@ def scrape_to_structured_markdown(html_source, url, project_name="Project Kelder
     
     page_title = soup.find(config["title_selector"])
     title_text = clean_fragment(page_title.get_text()) if page_title else "Geen titel gevonden"
-    
-    # Sla de schone titel op voor de bestandsnaam-generatie
     current_page_title = slugify_title(title_text)
     
-    md_document.append("# METADATA")
-    md_document.append(f"* **Documenttitel**: {title_text}")
-    md_document.append(f"* **Bron-URL**: {url}")
-    md_document.append(f"* **Project**: {project_name}")
-    md_document.append(f"* **Scrapedatum**: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
-    md_document.append(f"* **Status**: Gestructureerd voor Gemini\n")
+    # --- GEMINI-OPTIMIZED YAML FRONTMATTER ---
+    md_document.append("---")
+    md_document.append(f'title: "{title_text}"')
+    md_document.append(f'source_url: "{url}"')
+    md_document.append(f'domain: "{domain}"')
+    md_document.append(f'scraped_date: "{datetime.now().strftime("%Y-%m-%d %H:%M")}"')
+    md_document.append(f'project: "{project_name}"')
+    md_document.append('status: "Gemini-Ready"')
     md_document.append("---\n")
+    
+    md_document.append(f"# {title_text}\n")
     
     for selector in config["ignore_elements"]:
         for garbage in soup.select(selector):
@@ -96,24 +133,37 @@ def scrape_to_structured_markdown(html_source, url, project_name="Project Kelder
         main_container = soup.body
         
     if main_container:
-        for element in main_container.find_all(['h1', 'h2', 'h3', 'p', 'table', 'ul', 'ol'], recursive=True):
-            if element.find_parent(['table', 'ul', 'ol']) and element.name not in ['table', 'ul', 'ol']:
+        for element in main_container.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'blockquote', 'pre', 'table', 'ul', 'ol'], recursive=True):
+            if element.find_parent(['table', 'ul', 'ol', 'blockquote', 'pre']) and element.name not in ['table', 'ul', 'ol', 'blockquote', 'pre']:
                 continue
                 
-            if element.name in ['h1', 'h2', 'h3']:
+            if element.name in ['h1', 'h2', 'h3', 'h4']:
+                header_text = node_to_markdown_inline(element, url)
+                if element.name == 'h1' and header_text.strip().lower() == title_text.strip().lower():
+                    continue
                 level = int(element.name[1])
-                md_document.append(f"\n{'#' * level} {clean_fragment(element.get_text())}")
+                md_document.append(f"\n{'#' * level} {header_text}\n")
             elif element.name == 'p':
-                text = clean_fragment(element.get_text())
+                text = node_to_markdown_inline(element, url)
                 if text:
                     md_document.append(f"\n{text}\n")
+            elif element.name == 'blockquote':
+                text = node_to_markdown_inline(element, url)
+                if text:
+                    quoted = "\n".join(f"> {line}" for line in text.splitlines() if line)
+                    md_document.append(f"\n{quoted}\n")
+            elif element.name == 'pre':
+                code_text = element.get_text().strip()
+                if code_text:
+                    md_document.append(f"\n```\n{code_text}\n```\n")
             elif element.name == 'table':
-                md_document.append(parse_html_table(element))
+                md_document.append(parse_html_table(element, url))
             elif element.name in ['ul', 'ol']:
                 items = element.find_all('li', recursive=False)
-                for item in items:
-                    marker = "1." if element.name == 'ol' else "*"
-                    md_document.append(f"{marker} {clean_fragment(item.get_text())}")
+                for idx, item in enumerate(items, 1):
+                    marker = f"{idx}." if element.name == 'ol' else "*"
+                    text = node_to_markdown_inline(item, url)
+                    md_document.append(f"{marker} {text}")
                 md_document.append("")
 
     final_output = "\n".join(md_document)
@@ -127,19 +177,24 @@ def execute_scrape():
         return
         
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        with urllib.request.urlopen(req) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            
-        markdown_result = scrape_to_structured_markdown(html, url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'nl,en-US;q=0.9,en;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        markdown_result = scrape_to_structured_markdown(response.text, url)
         
         preview_box.delete(1.0, tk.END)
         preview_box.insert(tk.END, markdown_result)
         
         btn_save.config(state=tk.NORMAL)
         
+    except requests.exceptions.RequestException as req_err:
+        messagebox.showerror("Netwerk / Scrape Fout", f"Kan de pagina niet ophalen:\n{str(req_err)}")
     except Exception as error:
-        messagebox.showerror("Scrape Fout", f"Kan de pagina niet verwerken:\n{str(error)}")
+        messagebox.showerror("Verwerkings Fout", f"Fout bij verwerken van de pagina:\n{str(error)}")
 
 def save_markdown():
     global current_page_title
@@ -147,12 +202,11 @@ def save_markdown():
     if not markdown_content:
         return
         
-    # Genereer de automatische chronologische bestandsnaam (YYYY-MM-DD_Titel)
     date_str = datetime.now().strftime('%Y-%m-%d')
     suggested_filename = f"{date_str}_Keldering_{current_page_title}.md"
         
     save_path = filedialog.asksaveasfilename(
-        initialfile=suggested_filename,  # Dit injecteert de automatische naam in de dialoog
+        initialfile=suggested_filename,
         defaultextension=".md",
         filetypes=[("Markdown bestanden", "*.md")],
         title="Sla het Gemini-brondocument op"
@@ -171,31 +225,34 @@ def save_markdown():
             messagebox.showerror("Opslag Fout", f"Kon bestand niet opslaan:\n{str(e)}")
 
 # --- USER INTERFACE (TKINTER) ---
-app = tk.Tk()
-app.title("WPE12 - Gemini Source Formatter + Auto-Naming")
-app.geometry("750x850")
-app.configure(bg="#f5f5f5")
+if __name__ == "__main__":
+    app = tk.Tk()
+    app.title("WPE12 - Gemini Source Formatter + Auto-Naming")
+    app.geometry("750x850")
+    app.configure(bg="#f5f5f5")
 
-tk.Label(app, text="Voer de te scrapen URL in:", bg="#f5f5f5", font=("Arial", 10, "bold")).pack(pady=5)
-url_input = tk.Entry(app, width=85, font=("Arial", 10))
-url_input.pack(pady=5)
-url_input.focus()
+    tk.Label(app, text="Voer de te scrapen URL in:", bg="#f5f5f5", font=("Arial", 10, "bold")).pack(pady=5)
+    url_input = tk.Entry(app, width=85, font=("Arial", 10))
+    url_input.pack(pady=5)
+    url_input.focus()
 
-btn_scrape = tk.Button(
-    app, text="Scrape and format MD", command=execute_scrape, 
-    bg="#2196F3", fg="white", font=("Arial", 10, "bold"), padx=10
-)
-btn_scrape.pack(pady=5)
+    btn_scrape = tk.Button(
+        app, text="Scrape and format MD", command=execute_scrape, 
+        bg="#2196F3", fg="white", font=("Arial", 10, "bold"), padx=10
+    )
+    btn_scrape.pack(pady=5)
 
-tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
-preview_box = scrolledtext.ScrolledText(app, width=85, height=36, font=("Consolas", 10), bg="white", fg="black")
-preview_box.pack(pady=5, padx=10)
+    tk.Label(app, text="Markdown Voorbeeld (Bewerkbaar):", bg="#f5f5f5", font=("Arial", 9, "italic")).pack(pady=2)
+    preview_box = scrolledtext.ScrolledText(app, width=85, height=36, font=("Consolas", 10), bg="white", fg="black")
+    preview_box.pack(pady=5, padx=10)
 
-btn_save = tk.Button(
-    app, text="Sla Markdown op (.md)", command=save_markdown, 
-    bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5,
-    state=tk.DISABLED  
-)
-btn_save.pack(pady=10)
+    btn_save = tk.Button(
+        app, text="Sla Markdown op (.md)", command=save_markdown, 
+        bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5,
+        state=tk.DISABLED  
+    )
+    btn_save.pack(pady=10)
 
-app.mainloop()
+    app.mainloop()
+
+
