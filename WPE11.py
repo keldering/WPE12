@@ -8,9 +8,11 @@ import webbrowser
 from datetime import datetime
 from urllib.parse import urljoin
 
-# Store extracted data in memory so it can be formatted on the fly without re-fetching
+# Store extracted data and navigation history in memory
 last_extracted_data = []
 last_extracted_url = ""
+url_history = []
+primary_root_url = ""
 
 def clean_text(text):
     if not text:
@@ -29,6 +31,39 @@ def clean_url(href, base_url=""):
     full_url = urljoin(base_url, href_str) if base_url else href_str
     full_url = re.sub(r"[\]\)'\",\.]+$", "", full_url.strip())
     return full_url
+
+def handle_snippet_link_click(target_url):
+    global primary_root_url
+    current_url = url_entry.get().strip()
+    cleaned_url = clean_url(target_url)
+    
+    if cleaned_url and cleaned_url != current_url:
+        if current_url:
+            if not primary_root_url:
+                primary_root_url = current_url
+            url_history.append(current_url)
+            btn_back.config(state=tk.NORMAL)
+            btn_home.config(state=tk.NORMAL)
+            
+        url_entry.delete(0, tk.END)
+        url_entry.insert(0, cleaned_url)
+        extract_button_click()
+
+def go_back():
+    if url_history:
+        prev_url = url_history.pop()
+        url_entry.delete(0, tk.END)
+        url_entry.insert(0, prev_url)
+        if not url_history:
+            btn_back.config(state=tk.DISABLED)
+        extract_button_click()
+
+def go_home():
+    global primary_root_url
+    if primary_root_url:
+        url_entry.delete(0, tk.END)
+        url_entry.insert(0, primary_root_url)
+        extract_button_click()
 
 def node_to_markdown_inline(node, base_url=""):
     """Converteert inline HTML elementen (a, code, strong, em) naar Markdown met behoud van links."""
@@ -85,7 +120,6 @@ def fetch_and_extract(url, extract_type, keyword=""):
                 text = clean_text(link.get_text())
                 item = f"[{text}]({full_url})" if text else full_url
                 extracted_data.append(item)
-
                 
         elif extract_type == "Headings (H1-H6)":
             headings = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
@@ -106,14 +140,15 @@ def fetch_and_extract(url, extract_type, keyword=""):
         elif extract_type == "Images":
             extracted_data = []
             for img in soup.find_all('img', src=True):
-                src = urljoin(url, img['src'])
+                src = clean_url(img['src'], url)
+                if not src:
+                    continue
                 alt = clean_text(img.get('alt', ''))
                 item = f"![{alt}]({src})" if alt else src
                 extracted_data.append(item)
         else:
             extracted_data = []
         
-        # Apply keyword filtering if specified
         if keyword:
             keyword_lower = keyword.lower()
             extracted_data = [item for item in extracted_data if keyword_lower in item.lower()]
@@ -156,7 +191,7 @@ def format_extracted_data(data, char_width=75, mode="Markdown"):
         return "\n\n".join(formatted_items)
 
 def extract_button_click():
-    global last_extracted_data, last_extracted_url
+    global last_extracted_data, last_extracted_url, primary_root_url
     url = url_entry.get().strip()
     extract_type = extract_var.get()
     keyword = filter_entry.get().strip()
@@ -164,6 +199,10 @@ def extract_button_click():
     mode = format_mode_var.get()
     
     if url and extract_type:
+        if not primary_root_url:
+            primary_root_url = url
+            btn_home.config(state=tk.NORMAL)
+            
         last_extracted_url = url
         extracted_data = fetch_and_extract(url, extract_type, keyword=keyword)
         
@@ -266,25 +305,31 @@ def make_links_clickable_click():
             result_text.tag_bind(tag_name, "<Enter>", lambda e: result_text.config(cursor="hand2"))
             result_text.tag_bind(tag_name, "<Leave>", lambda e: result_text.config(cursor=""))
             
-            def create_open_handler(url_to_open):
-                return lambda e: webbrowser.open(url_to_open)
+            def create_click_handler(url_to_open):
+                return lambda e: handle_snippet_link_click(url_to_open)
                 
-            result_text.tag_bind(tag_name, "<Button-1>", create_open_handler(target_url))
+            result_text.tag_bind(tag_name, "<Button-1>", create_click_handler(target_url))
             result_text.tag_add(tag_name, start_tk, end_tk)
-
 
 # --- GUI SETUP ---
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("WPE11 - Webpage Snippet Extractor & Journal Builder")
-    root.geometry("800x800")
+    root.geometry("850x800")
     root.configure(bg="#f8f9fa")
 
     # URL Input Frame
     url_frame = ttk.Frame(root, padding=5)
     url_frame.pack(fill=tk.X, padx=10, pady=5)
+
+    btn_back = ttk.Button(url_frame, text="⬅ Back", command=go_back, state=tk.DISABLED)
+    btn_back.pack(side=tk.LEFT, padx=(0, 3))
+
+    btn_home = ttk.Button(url_frame, text="🏠 Root", command=go_home, state=tk.DISABLED)
+    btn_home.pack(side=tk.LEFT, padx=(0, 5))
+
     ttk.Label(url_frame, text="URL:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 5))
-    url_entry = ttk.Entry(url_frame, width=80)
+    url_entry = ttk.Entry(url_frame, width=70)
     url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     # Options Frame (Type, Filter, Width, Mode)
@@ -333,6 +378,7 @@ if __name__ == "__main__":
     result_text.config(yscrollcommand=scrollbar.set)
 
     root.mainloop()
+
 
 
 
