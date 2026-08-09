@@ -35,8 +35,21 @@ def slugify_title(text):
     clean = re.sub(r'[\\/*?:"<>|]', "", text)
     return re.sub(r'\s+', '_', clean.strip())[:40]
 
+def clean_url(href, base_url=""):
+    """Sanitizes raw href strings, handling list representations, trailing brackets, and relative paths."""
+    if not href:
+        return ""
+    if isinstance(href, (list, tuple)):
+        href = href[0] if href else ""
+    href_str = str(href).strip("[]'\" \t\r\n")
+    if href_str.startswith(('javascript:', 'mailto:', 'tel:', '#')):
+        return ""
+    full_url = urljoin(base_url, href_str) if base_url else href_str
+    full_url = re.sub(r"[\]\)'\",\.]+$", "", full_url.strip())
+    return full_url
+
 def node_to_markdown_inline(node, base_url=""):
-    """Converteert inline HTML elementen (a, code, strong, em) naar Markdown met behoud van links."""
+    """Converteert inline HTML elementen (a, code, strong, em) naar Markdown met behoud van schone links."""
     if not node:
         return ""
     
@@ -46,10 +59,10 @@ def node_to_markdown_inline(node, base_url=""):
         if isinstance(child, NavigableString):
             parts.append(str(child))
         elif child.name == 'a':
-            href = child.get('href', '').strip()
+            raw_href = child.get('href', '')
+            full_url = clean_url(raw_href, base_url)
             link_text = clean_fragment(child.get_text())
-            if href:
-                full_url = urljoin(base_url, href) if base_url else href
+            if full_url:
                 if link_text:
                     parts.append(f" [{link_text}]({full_url}) ")
                 else:
@@ -179,15 +192,15 @@ def on_preview_link_click(event):
             if preview_box.compare(start, "<=", click_index) and preview_box.compare(click_index, "<", end):
                 clicked_text = preview_box.get(start, end).strip()
                 
-                # Extract URL from Markdown link [Text](URL) or raw URL
                 match = re.search(r'\((https?://[^\s\)]+)\)', clicked_text)
                 if match:
-                    target_url = match.group(1)
+                    raw_url = match.group(1)
                 elif clicked_text.startswith(('http://', 'https://')):
-                    target_url = clicked_text
+                    raw_url = clicked_text
                 else:
-                    target_url = ""
+                    raw_url = ""
                     
+                target_url = clean_url(raw_url)
                 if target_url:
                     url_input.delete(0, tk.END)
                     url_input.insert(0, target_url)
@@ -212,6 +225,7 @@ def make_preview_links_clickable():
         start_idx = f"1.0 + {match.start()} chars"
         end_idx = f"1.0 + {match.end()} chars"
         preview_box.tag_add("preview_link", start_idx, end_idx)
+
 
 def execute_scrape():
     url = url_input.get().strip()
