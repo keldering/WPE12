@@ -243,35 +243,35 @@ def save_button_click():
     except Exception as e:
         messagebox.showerror("Fout", f"Opslaan mislukt: {e}")
 
-def open_url(event):
-    click_index = result_text.index(f"@{event.x},{event.y}")
-    if "link" in result_text.tag_names(click_index):
-        ranges = result_text.tag_ranges("link")
-        for i in range(0, len(ranges), 2):
-            start, end = ranges[i], ranges[i + 1]
-            if result_text.compare(start, "<=", click_index) and result_text.compare(click_index, "<", end):
-                url = result_text.get(start, end).strip()
-                if url:
-                    if not url.startswith(("http://", "https://")):
-                        url = "https://" + url
-                    webbrowser.open(url)
-                break
+def char_offset_to_tk_index(text, offset):
+    lines = text[:offset].split('\n')
+    line_num = len(lines)
+    col_num = len(lines[-1])
+    return f"{line_num}.{col_num}"
 
 def make_links_clickable_click():
-    result_text.tag_config("link", foreground="blue", underline=True)
-    result_text.tag_bind("link", "<Enter>", lambda e: result_text.config(cursor="hand2"))
-    result_text.tag_bind("link", "<Leave>", lambda e: result_text.config(cursor=""))
-    result_text.tag_bind("link", "<Button-1>", open_url)
-
-    result_text.tag_remove("link", "1.0", tk.END)
-
     content = result_text.get("1.0", tk.END)
-    url_pattern = re.compile(r'https?://[^\s\)]+|www\.[^\s\)]+')
+    md_link_pattern = re.compile(r'\[([^\]]+)\]\((https?://[^\s\)]+)\)|(https?://[^\s\)]+)')
 
-    for match in url_pattern.finditer(content):
-        start_idx = f"1.0 + {match.start()} chars"
-        end_idx = f"1.0 + {match.end()} chars"
-        result_text.tag_add("link", start_idx, end_idx)
+    for idx, match in enumerate(md_link_pattern.finditer(content)):
+        start_tk = char_offset_to_tk_index(content, match.start())
+        end_tk = char_offset_to_tk_index(content, match.end())
+        
+        raw_url = match.group(2) if match.group(2) else match.group(3)
+        target_url = clean_url(raw_url)
+        
+        if target_url:
+            tag_name = f"snippet_link_{idx}"
+            result_text.tag_config(tag_name, foreground="blue", underline=True)
+            result_text.tag_bind(tag_name, "<Enter>", lambda e: result_text.config(cursor="hand2"))
+            result_text.tag_bind(tag_name, "<Leave>", lambda e: result_text.config(cursor=""))
+            
+            def create_open_handler(url_to_open):
+                return lambda e: webbrowser.open(url_to_open)
+                
+            result_text.tag_bind(tag_name, "<Button-1>", create_open_handler(target_url))
+            result_text.tag_add(tag_name, start_tk, end_tk)
+
 
 # --- GUI SETUP ---
 if __name__ == "__main__":
